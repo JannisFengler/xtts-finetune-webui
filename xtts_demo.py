@@ -35,8 +35,8 @@ XTTS_MODEL = None
 def load_model(xtts_checkpoint, xtts_config, xtts_vocab, xtts_speaker):
     global XTTS_MODEL
     clear_gpu_cache()
-    if not xtts_checkpoint or not xtts_config or not xtts_vocab:
-        raise ValueError("You need to provide `XTTS checkpoint path`, `XTTS config path`, and `XTTS vocab path`.")
+    if not xtts_checkpoint or not xtts_config or not xtts_vocab or not xtts_speaker:
+        raise ValueError("You need to provide `XTTS checkpoint path`, `XTTS config path`, `XTTS vocab path`, and `XTTS speaker path`.")
     
     config = XttsConfig()
     config.load_json(xtts_config)
@@ -125,6 +125,8 @@ def preprocess_dataset(audio_files, audio_folder_path, language, whisper_model, 
     out_path = os.path.join(out_path, "dataset")
     os.makedirs(out_path, exist_ok=True)
 
+    print(f"Preprocessing audio files in: {out_path}")
+
     if audio_folder_path:
         audio_files = list(list_audios(audio_folder_path))
     else:
@@ -143,6 +145,7 @@ def preprocess_dataset(audio_files, audio_folder_path, language, whisper_model, 
                 target_language=language, 
                 out_path=out_path
             )
+            print(f"Total audio duration: {audio_total_size} seconds")
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Data processing was interrupted due to an error: {e}")
@@ -160,6 +163,7 @@ def train_model(custom_model, version, language, train_csv, eval_csv, num_epochs
 
     if run_dir.exists():
         shutil.rmtree(run_dir)
+        print(f"Removed existing run directory: {run_dir}")
     
     lang_file_path = Path(output_path) / "dataset" / "lang.txt"
     current_language = None
@@ -172,6 +176,16 @@ def train_model(custom_model, version, language, train_csv, eval_csv, num_epochs
     
     if not train_csv or not eval_csv:
         raise ValueError("Train CSV and Eval CSV must be provided.")
+    
+    # Adjust train_csv and eval_csv paths
+    # If train_csv is not an absolute path, assume it's relative to out_path/dataset
+    if not os.path.isabs(train_csv):
+        train_csv = os.path.join(output_path, "dataset", train_csv)
+    if not os.path.isabs(eval_csv):
+        eval_csv = os.path.join(output_path, "dataset", eval_csv)
+
+    print(f"Training with Train CSV: {train_csv}")
+    print(f"Training with Eval CSV: {eval_csv}")
     
     try:
         max_audio_length = int(max_audio_length * 22050)
@@ -196,10 +210,12 @@ def train_model(custom_model, version, language, train_csv, eval_csv, num_epochs
 
     ft_xtts_checkpoint = os.path.join(exp_path, "best_model.pth")
     shutil.copy(ft_xtts_checkpoint, ready_dir / "unoptimize_model.pth")
-
+    print(f"Copied best_model.pth to {ready_dir / 'unoptimize_model.pth'}")
+    
     speaker_reference_new_path = ready_dir / "reference.wav"
     shutil.copy(speaker_wav, speaker_reference_new_path)
-
+    print(f"Copied speaker reference audio to {speaker_reference_new_path}")
+    
     print("Model training done!")
     return config_path, vocab_file, ready_dir / "unoptimize_model.pth", speaker_xtts_path, speaker_reference_new_path
 
@@ -212,8 +228,10 @@ def optimize_model(out_path, clear_train_data):
     # Clear specified training data directories
     if clear_train_data in {"run", "all"} and run_dir.exists():
         shutil.rmtree(run_dir)
+        print(f"Removed run directory: {run_dir}")
     if clear_train_data in {"dataset", "all"} and dataset_dir.exists():
         shutil.rmtree(dataset_dir)
+        print(f"Removed dataset directory: {dataset_dir}")
 
     model_path = ready_dir / "unoptimize_model.pth"
 
@@ -221,7 +239,7 @@ def optimize_model(out_path, clear_train_data):
         raise FileNotFoundError("Unoptimized model not found in ready folder.")
 
     # Load the checkpoint and remove unnecessary parts
-    checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
+    checkpoint = torch.load(model_path, map_location=torch.device("cpu"), weights_only=True)
     if "optimizer" in checkpoint:
         del checkpoint["optimizer"]
     model_keys = list(checkpoint["model"].keys())
@@ -230,15 +248,15 @@ def optimize_model(out_path, clear_train_data):
             del checkpoint["model"][key]
 
     os.remove(model_path)
+    print(f"Removed unoptimized model: {model_path}")
 
     # Save the optimized model
     optimized_model = ready_dir / "model.pth"
     torch.save(checkpoint, optimized_model)
-    ft_xtts_checkpoint = str(optimized_model)
-
+    print(f"Model optimized and saved at {optimized_model}!")
+    
     clear_gpu_cache()
-    print(f"Model optimized and saved at {ft_xtts_checkpoint}!")
-    return ft_xtts_checkpoint
+    return optimized_model
 
 def main():
     parser = argparse.ArgumentParser(
@@ -260,8 +278,8 @@ def main():
     train_parser.add_argument('--custom_model', type=str, help='Path to custom model.pth file', default="")
     train_parser.add_argument('--version', type=str, help='XTTS base version', default="v2.0.2")
     train_parser.add_argument('--language', type=str, help='Dataset language (e.g., en, es)', required=True)
-    train_parser.add_argument('--train_csv', type=str, help='Path to train CSV', required=True)
-    train_parser.add_argument('--eval_csv', type=str, help='Path to eval CSV', required=True)
+    train_parser.add_argument('--train_csv', type=str, help='Path to train CSV (relative to out_path/dataset)', required=True)
+    train_parser.add_argument('--eval_csv', type=str, help='Path to eval CSV (relative to out_path/dataset)', required=True)
     train_parser.add_argument('--num_epochs', type=int, help='Number of epochs', default=32)
     train_parser.add_argument('--batch_size', type=int, help='Batch size', default=8)
     train_parser.add_argument('--grad_acumm', type=int, help='Gradient accumulation steps', default=8)
